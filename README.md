@@ -1,11 +1,11 @@
 # ApprovalStorm
 
-Project purpose is pending.
+ApprovalStorm is a simulation platform for testing whether an organization can maintain human oversight of autonomous agents during demand spikes, service outages, and reviewer shortages.
 
 ## Architecture
 
-The local repository has no application code yet.
+A discrete-event simulator replays synthetic agent requests against reviewer schedules, approval deadlines, and permission rules. An audit layer checks which workflows completed, missed deadlines, or were blocked by a safety rule. A scenario comparison report shows how staffing and scheduling changes affect throughput and oversight.
 
 ## Running locally
 
-Run instructions will be added when the project has a runnable entry point.
+The project is at the design stage. A runnable prototype and setup commands are pending.
