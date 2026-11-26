@@ -26,3 +26,9 @@ Run the [example scenario file](examples/staffing.json) to compare two reviewer 
 ```
 
 Each scenario defines its request arrivals, deadlines, review durations, and reviewer start times in simulated minutes. Edit a copy of the example to try different values. Add `--events` to inspect the audit log.
+
+The [coverage gap example](examples/coverage-gap.json) compares continuous coverage with a mid-shift break. Set a reviewer's `availability_windows` to an ordered list of windows with a `start` and optional `end`. A reviewer can start work at the opening minute and finish work already underway after closing. Omit the final `end` for a window that stays open.
+
+```powershell
+.\.venv\Scripts\python.exe -m approvalstorm --scenario-file examples/coverage-gap.json
+```

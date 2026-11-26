@@ -23,10 +23,26 @@ class Request:
 
 
 @dataclass(frozen=True)
+class AvailabilityWindow:
+    start: int
+    end: int | None = None
+
+    def contains(self, minute: int) -> bool:
+        return self.start <= minute and (self.end is None or minute < self.end)
+
+
+@dataclass(frozen=True)
 class Reviewer:
     id: str
     available_from: int = 0
     role: str = REVIEWER_ROLE
+    availability_windows: tuple[AvailabilityWindow, ...] | None = None
+
+    @property
+    def schedule(self) -> tuple[AvailabilityWindow, ...]:
+        if self.availability_windows is None:
+            return (AvailabilityWindow(self.available_from),)
+        return self.availability_windows
 
 
 @dataclass(frozen=True)
@@ -59,7 +75,9 @@ class Summary:
 
 def simulate(scenario: Scenario) -> list[dict]:
     env = simpy.Environment()
-    pool = simpy.Store(env)
+    pool = simpy.FilterStore(env)
+    # An offer remains reserved while a request holds the reviewer.
+    offered = set()
     events = []
 
     def record(event, request_id=None, **details):
@@ -73,17 +91,40 @@ def simulate(scenario: Scenario) -> list[dict]:
             }
         )
 
-    def start_shift(reviewer):
-        yield env.timeout(reviewer.available_from)
-        record("reviewer_available", reviewer=reviewer.id, role=reviewer.role)
-        yield pool.put(reviewer)
+    def on_shift(reviewer):
+        return any(window.contains(env.now) for window in reviewer.schedule)
+
+    def offer(reviewer):
+        if reviewer not in offered and on_shift(reviewer):
+            offered.add(reviewer)
+            pool.put(reviewer)
+
+    def follow_schedule(reviewer):
+        previous_end = None
+        for window in reviewer.schedule:
+            yield env.timeout(window.start - env.now)
+            if window.start != previous_end:
+                record("reviewer_available", reviewer=reviewer.id, role=reviewer.role)
+                offer(reviewer)
+            if window.end is None:
+                return
+            yield env.timeout(window.end - env.now)
+            previous_end = window.end
+            # Touching windows provide continuous coverage.
+            if on_shift(reviewer):
+                continue
+            record("reviewer_unavailable", reviewer=reviewer.id, role=reviewer.role)
+            if reviewer in pool.items:
+                pool.get(lambda candidate: candidate == reviewer)
+                offered.remove(reviewer)
 
     def handle(request):
         yield env.timeout(request.arrival)
         evidence_version = 1
         record("arrived", request.id, deadline=request.deadline, evidence=evidence_version)
 
-        with pool.get() as slot:
+        # Check the window at assignment, even if a simultaneous close event is pending.
+        with pool.get(on_shift) as slot:
             yield slot | env.timeout(request.deadline - env.now)
             if not slot.triggered:
                 record("expired", request.id, stage="queue")
@@ -109,7 +150,8 @@ def simulate(scenario: Scenario) -> list[dict]:
             approval = Approval(reviewer, evidence_version)
             record("reviewed", request.id, reviewer=reviewer.id, evidence=evidence_version)
         finally:
-            pool.put(reviewer)
+            offered.remove(reviewer)
+            offer(reviewer)
 
         if request.revise_after_review:
             evidence_version += 1
@@ -138,7 +180,7 @@ def simulate(scenario: Scenario) -> list[dict]:
         record("dependency_blocked", request.id)
 
     for reviewer in scenario.reviewers:
-        env.process(start_shift(reviewer))
+        env.process(follow_schedule(reviewer))
     for request in scenario.requests:
         env.process(handle(request))
     env.run()
@@ -252,12 +294,41 @@ def _request(value, location):
     )
 
 
+def _availability_windows(values, location):
+    if not isinstance(values, list):
+        raise ValueError(f"{location} must be an array")
+    windows = []
+    for index, value in enumerate(values):
+        item = f"{location}[{index}]"
+        _check_fields(value, item, {"start"}, {"end"})
+        start = _minute(value["start"], f"{item}.start")
+        end = value.get("end")
+        if end is not None:
+            end = _minute(end, f"{item}.end")
+            if end <= start:
+                raise ValueError(f"{item}.end must be after start")
+        if windows:
+            previous_end = windows[-1].end
+            if previous_end is None or start < previous_end:
+                raise ValueError(f"{item}.start must follow the previous window without overlap")
+        windows.append(AvailabilityWindow(start, end))
+    return tuple(windows)
+
+
 def _reviewer(value, location):
-    _check_fields(value, location, {"id"}, {"available_from", "role"})
+    _check_fields(value, location, {"id"}, {"available_from", "role", "availability_windows"})
+    windows = None
+    if "availability_windows" in value:
+        if "available_from" in value:
+            raise ValueError(f"{location} must choose either available_from or availability_windows")
+        windows = _availability_windows(
+            value["availability_windows"], f"{location}.availability_windows"
+        )
     return Reviewer(
         _text(value["id"], f"{location}.id"),
         _minute(value.get("available_from", 0), f"{location}.available_from"),
         _text(value.get("role", REVIEWER_ROLE), f"{location}.role"),
+        windows,
     )
 
 

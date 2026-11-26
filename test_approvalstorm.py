@@ -3,7 +3,16 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from approvalstorm import Request, Reviewer, Scenario, load_scenarios, scenarios, simulate, summarize
+from approvalstorm import (
+    AvailabilityWindow,
+    Request,
+    Reviewer,
+    Scenario,
+    load_scenarios,
+    scenarios,
+    simulate,
+    summarize,
+)
 
 
 class SimulationTests(unittest.TestCase):
@@ -88,6 +97,43 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(completed, ["R3"])
         self.assertEqual(summarize(events).review_minutes, 4)
 
+    def test_idle_reviewer_stops_taking_work_at_close_and_resumes_at_open(self):
+        reviewer = Reviewer(
+            "A", availability_windows=(AvailabilityWindow(0, 3), AvailabilityWindow(8))
+        )
+        requests = (Request("R1", 3, 8, 1), Request("R2", 3, 12, 1))
+        events = simulate(Scenario("Availability boundaries", requests, (reviewer,)))
+        assignments = [
+            (entry["request"], entry["minute"])
+            for entry in events
+            if entry["event"] == "assigned"
+        ]
+        self.assertEqual(assignments, [("R2", 8)])
+        expiry = next(entry for entry in events if entry["event"] == "expired")
+        self.assertEqual((expiry["request"], expiry["stage"]), ("R1", "queue"))
+
+    def test_reopening_during_a_review_does_not_add_capacity(self):
+        reviewer = Reviewer(
+            "A",
+            availability_windows=(
+                AvailabilityWindow(0, 2),
+                AvailabilityWindow(4, 6),
+                AvailabilityWindow(6),
+            ),
+        )
+        requests = (Request("R1", 0, 15, 6), Request("R2", 2, 15, 1), Request("R3", 4, 15, 1))
+        events = simulate(Scenario("Busy through reopen", requests, (reviewer,)))
+        assignments = [
+            (entry["request"], entry["minute"])
+            for entry in events
+            if entry["event"] == "assigned"
+        ]
+        self.assertEqual(assignments, [("R1", 0), ("R2", 6), ("R3", 7)])
+        self.assertFalse(
+            any(entry["event"].startswith("reviewer_") and entry["minute"] == 6 for entry in events)
+        )
+        self.assertEqual(summarize(events).completed, 3)
+
 
 class ScenarioFileTests(unittest.TestCase):
     def setUp(self):
@@ -151,3 +197,46 @@ class ScenarioFileTests(unittest.TestCase):
         unstaffed, empty = load_scenarios(self.path)
         self.assertEqual(summarize(simulate(unstaffed)).expired, 1)
         self.assertEqual(summarize(simulate(empty)).requests, 0)
+
+    def test_coverage_gap_example_finishes_work_already_underway(self):
+        example = Path(__file__).with_name("examples") / "coverage-gap.json"
+        continuous, gap = load_scenarios(example)
+        self.assertEqual(continuous.requests, gap.requests)
+        self.assertEqual(summarize(simulate(continuous)).completed, 3)
+        events = simulate(gap)
+        changes = [
+            (entry["event"], entry["minute"])
+            for entry in events
+            if entry["event"].startswith("reviewer_")
+        ]
+        self.assertEqual(
+            changes, [("reviewer_available", 0), ("reviewer_unavailable", 3), ("reviewer_available", 8)]
+        )
+        completed = [
+            (entry["request"], entry["minute"])
+            for entry in events
+            if entry["event"] == "completed"
+        ]
+        self.assertEqual(completed, [("R1", 5)])
+        self.assertEqual(summarize(events).expired, 2)
+
+    def test_validates_windows_and_accepts_a_reviewer_with_no_windows(self):
+        cases = (
+            ({"availability_windows": None}, "must be an array"),
+            ({"availability_windows": [{"start": 3, "end": 3}]}, "end must be after start"),
+            (
+                {"availability_windows": [{"start": 3, "end": 8}, {"start": 6}]},
+                "without overlap",
+            ),
+            ({"availability_windows": [{"start": 0}, {"start": 7}]}, "without overlap"),
+            ({"availability_windows": [], "available_from": 0}, "must choose either"),
+        )
+        for fields, message in cases:
+            with self.subTest(fields=fields):
+                self.write([{**self.scenario, "reviewers": [{"id": "A", **fields}]}])
+                with self.assertRaisesRegex(ValueError, message):
+                    load_scenarios(self.path)
+
+        self.write([{**self.scenario, "reviewers": [{"id": "A", "availability_windows": []}]}])
+        (loaded,) = load_scenarios(self.path)
+        self.assertEqual(summarize(simulate(loaded)).expired, 1)
