@@ -3,6 +3,7 @@
 import argparse
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from random import Random
 
 import simpy
@@ -189,19 +190,131 @@ def scenarios(seed: int) -> tuple[Scenario, ...]:
     )
 
 
+def _check_fields(value, location, required, optional):
+    if not isinstance(value, dict):
+        raise ValueError(f"{location} must be an object")
+    missing = required - value.keys()
+    if missing:
+        raise ValueError(f"{location} is missing {', '.join(sorted(missing))}")
+    unknown = value.keys() - required - optional
+    if unknown:
+        raise ValueError(f"{location} has unknown fields: {', '.join(sorted(unknown))}")
+
+
+def _text(value, location):
+    if not isinstance(value, str) or not value.strip() or not value.isprintable():
+        raise ValueError(f"{location} must be nonempty printable text")
+    return value
+
+
+def _minute(value, location, minimum=0):
+    if type(value) is not int or value < minimum:
+        raise ValueError(f"{location} must be an integer greater than or equal to {minimum}")
+    return value
+
+
+def _records(values, location, parse, identity):
+    if not isinstance(values, list):
+        raise ValueError(f"{location} must be an array")
+    seen = set()
+    records = []
+    for index, value in enumerate(values):
+        item_location = f"{location}[{index}]"
+        record = parse(value, item_location)
+        key = getattr(record, identity)
+        if key in seen:
+            raise ValueError(f"{item_location}.{identity} is duplicated: {key!r}")
+        seen.add(key)
+        records.append(record)
+    return tuple(records)
+
+
+def _request(value, location):
+    _check_fields(
+        value,
+        location,
+        {"id", "arrival", "deadline", "review_minutes"},
+        {"revise_after_review"},
+    )
+    arrival = _minute(value["arrival"], f"{location}.arrival")
+    deadline = _minute(value["deadline"], f"{location}.deadline")
+    if deadline <= arrival:
+        raise ValueError(f"{location}.deadline must be after arrival")
+    revise = value.get("revise_after_review", False)
+    if type(revise) is not bool:
+        raise ValueError(f"{location}.revise_after_review must be a boolean")
+    return Request(
+        _text(value["id"], f"{location}.id"),
+        arrival,
+        deadline,
+        _minute(value["review_minutes"], f"{location}.review_minutes", minimum=1),
+        revise,
+    )
+
+
+def _reviewer(value, location):
+    _check_fields(value, location, {"id"}, {"available_from", "role"})
+    return Reviewer(
+        _text(value["id"], f"{location}.id"),
+        _minute(value.get("available_from", 0), f"{location}.available_from"),
+        _text(value.get("role", REVIEWER_ROLE), f"{location}.role"),
+    )
+
+
+def _scenario(value, location):
+    _check_fields(value, location, {"name", "requests", "reviewers"}, {"dependency_outage_until"})
+    return Scenario(
+        _text(value["name"], f"{location}.name"),
+        _records(value["requests"], f"{location}.requests", _request, "id"),
+        _records(value["reviewers"], f"{location}.reviewers", _reviewer, "id"),
+        _minute(value.get("dependency_outage_until", 0), f"{location}.dependency_outage_until"),
+    )
+
+
+def _json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key!r}")
+        result[key] = value
+    return result
+
+
+def load_scenarios(path: Path) -> tuple[Scenario, ...]:
+    """Read and validate all scenarios before starting a simulation."""
+    data = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_json_object)
+    loaded = _records(data, "scenarios", _scenario, "name")
+    if not loaded:
+        raise ValueError("scenarios must contain at least one scenario")
+    return loaded
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", default=42, type=int, help="Seed for review durations")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--seed", default=42, type=int, help="Seed for built-in review durations")
+    source.add_argument("--scenario-file", type=Path, help="Run the scenarios from a JSON file")
     parser.add_argument("--events", action="store_true", help="Print JSON Lines audit events")
     args = parser.parse_args()
 
+    if args.scenario_file is None:
+        selected = scenarios(args.seed)
+        title = f"ApprovalStorm seed {args.seed}"
+    else:
+        try:
+            selected = load_scenarios(args.scenario_file)
+        except (OSError, ValueError) as error:
+            parser.error(f"{args.scenario_file}: {error}")
+        title = "ApprovalStorm scenario comparison"
+
     if not args.events:
-        print(f"ApprovalStorm seed {args.seed}")
+        width = max(24, max(len(scenario.name) for scenario in selected))
+        print(title)
         print(
-            f"{'Scenario':<24} {'Requests':>8} {'Completed':>9} {'Deadline misses':>15}"
+            f"{'Scenario':<{width}} {'Requests':>8} {'Completed':>9} {'Deadline misses':>15}"
             f" {'Review minutes':>14} {'Policy blocks':>13} {'Retries':>7}"
         )
-    for scenario in scenarios(args.seed):
+    for scenario in selected:
         events = simulate(scenario)
         if args.events:
             for event in events:
@@ -209,7 +322,7 @@ def main():
             continue
         summary = summarize(events)
         print(
-            f"{scenario.name:<24} {summary.requests:>8} {summary.completed:>9}"
+            f"{scenario.name:<{width}} {summary.requests:>8} {summary.completed:>9}"
             f" {summary.deadline_violation_rate:>15.1%} {summary.review_minutes:>14}"
             f" {summary.policy_blocks:>13} {summary.retries:>7}"
         )

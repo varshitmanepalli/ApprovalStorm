@@ -18,3 +18,11 @@ python -m venv .venv
 ```
 
 Add `--events` to stream the audit log as JSON Lines for the same seed.
+
+Run the [example scenario file](examples/staffing.json) to compare two reviewer schedules under the same workload and outage.
+
+```powershell
+.\.venv\Scripts\python.exe -m approvalstorm --scenario-file examples/staffing.json
+```
+
+Each scenario defines its request arrivals, deadlines, review durations, and reviewer start times in simulated minutes. Edit a copy of the example to try different values. Add `--events` to inspect the audit log.

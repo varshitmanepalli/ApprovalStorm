@@ -1,6 +1,9 @@
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from approvalstorm import Request, Reviewer, Scenario, scenarios, simulate, summarize
+from approvalstorm import Request, Reviewer, Scenario, load_scenarios, scenarios, simulate, summarize
 
 
 class SimulationTests(unittest.TestCase):
@@ -84,3 +87,67 @@ class SimulationTests(unittest.TestCase):
         self.assertCountEqual(expired, [("R1", "review"), ("R2", "queue")])
         self.assertEqual(completed, ["R3"])
         self.assertEqual(summarize(events).review_minutes, 4)
+
+
+class ScenarioFileTests(unittest.TestCase):
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "scenarios.json"
+        self.request = {"id": "R1", "arrival": 0, "deadline": 11, "review_minutes": 3}
+        self.scenario = {"name": "Custom", "requests": [self.request], "reviewers": [{"id": "A"}]}
+
+    def write(self, data):
+        self.path.write_text(json.dumps(data), encoding="utf-8-sig")
+
+    def test_loads_utf8_bom_and_applies_defaults(self):
+        self.write([self.scenario])
+        (loaded,) = load_scenarios(self.path)
+        self.assertEqual(loaded, Scenario("Custom", (Request("R1", 0, 11, 3),), (Reviewer("A"),)))
+        self.assertEqual(summarize(simulate(loaded)).completed, 1)
+
+    def test_example_compares_identical_workloads(self):
+        example = Path(__file__).with_name("examples") / "staffing.json"
+        delayed, staffed = load_scenarios(example)
+        self.assertEqual(delayed.requests, staffed.requests)
+        self.assertEqual(delayed.dependency_outage_until, staffed.dependency_outage_until)
+        self.assertEqual(summarize(simulate(delayed)).completed, 1)
+        self.assertEqual(summarize(simulate(staffed)).completed, 2)
+
+    def test_rejects_invalid_request_fields_with_their_location(self):
+        cases = (
+            ({"deadline": 0}, "deadline must be after arrival"),
+            ({"arrival": True}, "arrival must be an integer"),
+            ({"review_minutes": 0}, "review_minutes must be an integer"),
+            ({"revise_after_review": 1}, "revise_after_review must be a boolean"),
+            ({"duration": 4}, "has unknown fields: duration"),
+        )
+        for fields, message in cases:
+            with self.subTest(fields=fields):
+                self.write([{**self.scenario, "requests": [{**self.request, **fields}]}])
+                with self.assertRaisesRegex(ValueError, rf"scenarios\[0\]\.requests\[0\].*{message}"):
+                    load_scenarios(self.path)
+
+    def test_rejects_duplicate_ids_names_and_object_keys(self):
+        cases = (
+            ([{**self.scenario, "requests": [self.request, self.request]}], "id is duplicated"),
+            ([{**self.scenario, "reviewers": [{"id": "A"}, {"id": "A"}]}], "id is duplicated"),
+            ([self.scenario, self.scenario], "name is duplicated"),
+        )
+        for data, message in cases:
+            with self.subTest(data=data):
+                self.write(data)
+                with self.assertRaisesRegex(ValueError, message):
+                    load_scenarios(self.path)
+        self.path.write_text('[{"name": "first", "name": "second"}]', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "duplicate JSON field"):
+            load_scenarios(self.path)
+
+    def test_allows_scenarios_without_reviewers_or_requests(self):
+        self.write([
+            {**self.scenario, "reviewers": []},
+            {**self.scenario, "name": "Empty workload", "requests": []},
+        ])
+        unstaffed, empty = load_scenarios(self.path)
+        self.assertEqual(summarize(simulate(unstaffed)).expired, 1)
+        self.assertEqual(summarize(simulate(empty)).requests, 0)
