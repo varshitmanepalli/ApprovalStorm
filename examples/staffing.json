@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Burst with delayed reviewer",
+    "requests": [
+      {"id": "R1", "arrival": 0, "deadline": 11, "review_minutes": 3},
+      {"id": "R2", "arrival": 0, "deadline": 11, "review_minutes": 4},
+      {"id": "R3", "arrival": 0, "deadline": 11, "review_minutes": 4}
+    ],
+    "reviewers": [{"id": "A"}, {"id": "B", "available_from": 10}],
+    "dependency_outage_until": 9
+  },
+  {
+    "name": "Burst with both reviewers",
+    "requests": [
+      {"id": "R1", "arrival": 0, "deadline": 11, "review_minutes": 3},
+      {"id": "R2", "arrival": 0, "deadline": 11, "review_minutes": 4},
+      {"id": "R3", "arrival": 0, "deadline": 11, "review_minutes": 4}
+    ],
+    "reviewers": [{"id": "A"}, {"id": "B"}],
+    "dependency_outage_until": 9
+  }
+]

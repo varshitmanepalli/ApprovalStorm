@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Continuous coverage",
+    "requests": [
+      {"id": "R1", "arrival": 0, "deadline": 9, "review_minutes": 4},
+      {"id": "R2", "arrival": 2, "deadline": 10, "review_minutes": 3},
+      {"id": "R3", "arrival": 5, "deadline": 12, "review_minutes": 2}
+    ],
+    "reviewers": [{"id": "A"}]
+  },
+  {
+    "name": "Coverage gap from minute 3 to 8",
+    "requests": [
+      {"id": "R1", "arrival": 0, "deadline": 9, "review_minutes": 4},
+      {"id": "R2", "arrival": 2, "deadline": 10, "review_minutes": 3},
+      {"id": "R3", "arrival": 5, "deadline": 12, "review_minutes": 2}
+    ],
+    "reviewers": [
+      {"id": "A", "availability_windows": [{"start": 0, "end": 3}, {"start": 8}]}
+    ]
+  }
+]

@@ -8,4 +8,27 @@ A discrete-event simulator replays synthetic agent requests against reviewer sch
 
 ## Running locally
 
-The project is at the design stage. A runnable prototype and setup commands are pending.
+Run these commands from the project directory in PowerShell with Python 3.10 or newer.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m approvalstorm --seed 42
+.\.venv\Scripts\python.exe -m unittest -v
+```
+
+Add `--events` to stream the audit log as JSON Lines for the same seed.
+
+Run the [example scenario file](examples/staffing.json) to compare two reviewer schedules under the same workload and outage.
+
+```powershell
+.\.venv\Scripts\python.exe -m approvalstorm --scenario-file examples/staffing.json
+```
+
+Each scenario defines its request arrivals, deadlines, review durations, and reviewer start times in simulated minutes. Edit a copy of the example to try different values. Add `--events` to inspect the audit log.
+
+The [coverage gap example](examples/coverage-gap.json) compares continuous coverage with a mid-shift break. Set a reviewer's `availability_windows` to an ordered list of windows with a `start` and optional `end`. A reviewer can start work at the opening minute and finish work already underway after closing. Omit the final `end` for a window that stays open.
+
+```powershell
+.\.venv\Scripts\python.exe -m approvalstorm --scenario-file examples/coverage-gap.json
+```
